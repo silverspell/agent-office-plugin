@@ -1,0 +1,8 @@
+{
+  "name": "agent-office",
+  "version": "0.1.0",
+  "description": "Stream Claude Code activity to the Agent Office.",
+  "author": {
+    "name": "Agent Office"
+  }
+}

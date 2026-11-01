@@ -1,0 +1,14 @@
+{
+  "name": "agent-office",
+  "description": "Agent Office plugins for Claude Code",
+  "owner": {
+    "name": "Agent Office"
+  },
+  "plugins": [
+    {
+      "name": "agent-office",
+      "source": "./plugins/agent-office",
+      "description": "Stream Claude Code activity to the Agent Office."
+    }
+  ]
+}
