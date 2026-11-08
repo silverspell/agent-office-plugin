@@ -23478,7 +23478,7 @@ function stateForTool(tool) {
   return TOOL_STATES.get(tool) ?? "thinking";
 }
 function nextState(current, activity) {
-  if (current === "ended") {
+  if (current === "ended" && activity.kind !== "SessionStart") {
     return "ended";
   }
   switch (activity.kind) {
@@ -27268,6 +27268,11 @@ async function resolveTranscriptStart(input2, state) {
   state.offset = size;
   return { resolved: true, offsetSet: size > 0 };
 }
+var SESSION_END_REASON = /^[a-z_]{1,64}$/;
+function sessionEndReason(input2) {
+  const reason = readString2(input2, "reason");
+  return reason !== void 0 && SESSION_END_REASON.test(reason) ? reason : "unknown";
+}
 async function enrichStop(activity, input2, state) {
   if (input2.transcript_path === void 0 || !state.transcriptStartResolved) {
     return activity;
@@ -27331,10 +27336,18 @@ var HookProcessor = class {
     }
     const input2 = result.data;
     const state = this.agents.get(input2.session_id, this.clock.now());
+    let reopened = false;
     if (state.ended) {
-      state.lastEventAt = this.clock.now();
-      this.logger.info("hook.dropped", { reason: "ended", kind: input2.hook_event_name });
-      return "dropped";
+      if (input2.hook_event_name !== "SessionStart") {
+        state.lastEventAt = this.clock.now();
+        this.logger.info("hook.dropped", { reason: "ended", kind: input2.hook_event_name });
+        return "dropped";
+      }
+      state.ended = false;
+      delete state.currentState;
+      state.subagents = /* @__PURE__ */ new Set();
+      state.transcriptStartResolved = false;
+      reopened = true;
     }
     let offsetSet = false;
     if (!state.transcriptStartResolved) {
@@ -27386,6 +27399,9 @@ var HookProcessor = class {
     if (activity.state === "ended") {
       state.ended = true;
     }
+    if (input2.hook_event_name === "SessionEnd") {
+      this.logger.info("hook.session_end", { reason: sessionEndReason(input2) });
+    }
     if (timestamp.backwardsJumpMs !== void 0) {
       this.logger.warn("clock.backwards", { deltaMs: timestamp.backwardsJumpMs });
     }
@@ -27404,7 +27420,7 @@ var HookProcessor = class {
       this.logger.error("hook.error", code === void 0 ? {} : { code });
       return "error";
     }
-    await this.persistIfNeeded(input2, state, offsetBefore, seenBefore, offsetSet);
+    await this.persistIfNeeded(input2, state, offsetBefore, seenBefore, offsetSet || reopened);
     if (outcome === "queued") {
       this.logger.info("hook.queued", { count: 1 });
     }
@@ -27412,13 +27428,15 @@ var HookProcessor = class {
   }
   /**
    * Writes `agents.json` after a Stop that consumed transcript bytes (or new
-   * message ids), after SessionEnd, and once when the first hook of an Agent
-   * sets a non-zero transcript start. The monotonic floor is not part of this
-   * file; `clock.json` is written separately for every processed Activity.
+   * message ids), after SessionEnd, once when the first hook of an Agent sets
+   * a non-zero transcript start, and when an ended Agent opens again, so a
+   * restart does not drop the continued session (AO-173). The monotonic floor
+   * is not part of this file; `clock.json` is written separately for every
+   * processed Activity.
    */
-  async persistIfNeeded(input2, state, offsetBefore, seenBefore, offsetSet) {
+  async persistIfNeeded(input2, state, offsetBefore, seenBefore, startChanged) {
     const stopChanged = input2.hook_event_name === "Stop" && (state.offset !== offsetBefore || state.seenMessageIds.size !== seenBefore);
-    if (input2.hook_event_name !== "SessionEnd" && !stopChanged && !offsetSet) {
+    if (input2.hook_event_name !== "SessionEnd" && !stopChanged && !startChanged) {
       return;
     }
     try {
@@ -29308,7 +29326,7 @@ async function startRelay(options) {
 }
 
 // apps/relay/src/version.ts
-var VERSION = true ? "0.1.1" : readDevelopmentVersion();
+var VERSION = true ? "0.1.2" : readDevelopmentVersion();
 
 // apps/relay/src/cli.ts
 var DEFAULT_SERVER = true ? "https://office-dev.byteflow.tr" : "http://localhost:3000";
