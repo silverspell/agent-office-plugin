@@ -23604,8 +23604,15 @@ var REPOSITORY_ERROR_CODES = [
 var RepositoryErrorCodeSchema = external_exports.enum(REPOSITORY_ERROR_CODES);
 var SUPPORT_ACCESS_ERROR_CODES = [...BASE_ERROR_CODES];
 var SupportAccessErrorCodeSchema = external_exports.enum(SUPPORT_ACCESS_ERROR_CODES);
-var KPI_ERROR_CODES = [...BASE_ERROR_CODES, "person_detail_disabled"];
+var KPI_ERROR_CODES = [...BASE_ERROR_CODES];
 var KpiErrorCodeSchema = external_exports.enum(KPI_ERROR_CODES);
+var GIT_ERROR_CODES = [
+  ...BASE_ERROR_CODES,
+  "personal_organization",
+  /** The installation already belongs to another Organization (409). */
+  "git_installation_taken"
+];
+var GitErrorCodeSchema = external_exports.enum(GIT_ERROR_CODES);
 var ORGANIZATION_ERROR_CODES = [
   ...BASE_ERROR_CODES,
   "personal_organization",
@@ -23767,7 +23774,8 @@ var AUDIT_ACTIONS = [
   "license.create",
   "license.state_change",
   "organization.create",
-  "invitation.create"
+  "invitation.create",
+  "payment.refund_recorded"
 ];
 var AuditActionSchema = external_exports.enum(AUDIT_ACTIONS);
 var AuditLogActionSchema = external_exports.union([AuditActionSchema, external_exports.literal("unknown")]);
@@ -24299,6 +24307,25 @@ var FeedErrorResponseSchema = external_exports.object({
   code: BaseErrorCodeSchema
 }).strict();
 
+// packages/shared/src/git.ts
+var GIT_CONNECTION_STATUSES = ["active", "revoked"];
+var GitConnectionStatusSchema = external_exports.enum(GIT_CONNECTION_STATUSES);
+var GitConnectionSchema = external_exports.object({
+  provider: external_exports.literal("github"),
+  accountLogin: external_exports.string().min(1),
+  status: GitConnectionStatusSchema,
+  connectedAt: external_exports.iso.datetime()
+}).strict();
+var GitConnectionResponseSchema = external_exports.object({
+  connection: GitConnectionSchema.nullable()
+}).strict();
+var GitConnectionStartResponseSchema = external_exports.object({
+  url: external_exports.string().min(1)
+}).strict();
+var GitErrorResponseSchema = external_exports.object({
+  code: GitErrorCodeSchema
+}).strict();
+
 // packages/shared/src/kpis.ts
 var KPI_DIMENSIONS = ["team", "project", "member"];
 var KpiDimensionSchema = external_exports.enum(KPI_DIMENSIONS);
@@ -24352,9 +24379,8 @@ var KpiReportSchema = external_exports.object({
   tz: external_exports.string().min(1),
   by: KpiDimensionSchema,
   rows: external_exports.array(KpiRowSchema),
-  hiddenRows: external_exports.int().nonnegative(),
-  totals: KpiTotalsSchema.nullable(),
-  daily: external_exports.array(KpiDailyPointSchema).nullable()
+  totals: KpiTotalsSchema,
+  daily: external_exports.array(KpiDailyPointSchema)
 }).strict();
 var KpiErrorResponseSchema = external_exports.object({
   code: KpiErrorCodeSchema
@@ -24410,6 +24436,27 @@ var RoutingPreferencesSchema = external_exports.object({
   ]).default("personal"),
   choices: external_exports.record(external_exports.string().min(1), RoutingChoiceSchema).default({})
 }).strict();
+
+// packages/shared/src/management-report.ts
+var ManagementReportMonthSchema = external_exports.string().regex(/^\d{4}-\d{2}$/);
+var ManagementReportRowSchema = external_exports.object({
+  projectId: external_exports.uuid().nullable(),
+  name: external_exports.string().min(1).nullable(),
+  sharePercent: external_exports.int().min(0).max(100)
+}).strict();
+var ManagementReportSchema = external_exports.object({
+  month: ManagementReportMonthSchema,
+  rows: external_exports.array(ManagementReportRowSchema)
+}).strict();
+var ManagementReportQuerySchema = external_exports.object({
+  month: ManagementReportMonthSchema.optional()
+}).strict();
+var ManagementReportErrorResponseSchema = external_exports.object({
+  code: BaseErrorCodeSchema
+}).strict();
+
+// packages/shared/src/member-name-mask.ts
+var segmenter = new Intl.Segmenter("tr", { granularity: "grapheme" });
 
 // packages/shared/src/members.ts
 var MANUAL_MEMBER_STATUSES = ["available", "focused", "away"];
@@ -24586,7 +24633,13 @@ var OfficeAgentSchema = external_exports.object({
   memberId: external_exports.string().min(1),
   state: AgentStateSchema,
   since: external_exports.iso.datetime(),
-  subagents: external_exports.array(external_exports.string().min(1))
+  subagents: external_exports.array(external_exports.string().min(1)),
+  /**
+   * The Repository the Agent is working in, in the same lowercase form as
+   * the `project_repositories` keys. Null when it has none; the office names
+   * the Project only through this value (AO-166).
+   */
+  repository: external_exports.string().min(1).nullable()
 }).strict();
 var OfficeZoneTeamSchema = external_exports.object({
   zoneKey: external_exports.string().regex(/^zone-[1-8]$/),
@@ -24695,27 +24748,43 @@ var OfficeServerMessageSchema = external_exports.union([
   NudgeMessageSchema
 ]);
 
-// packages/shared/src/person-detail.ts
-var PersonDetailViewerSchema = external_exports.object({
-  memberId: external_exports.uuid(),
-  name: external_exports.string().min(1),
-  role: MemberRoleSchema
+// packages/shared/src/project-outcomes.ts
+var ProjectOutcomeSizeBandsSchema = external_exports.object({
+  s: external_exports.int().nonnegative(),
+  m: external_exports.int().nonnegative(),
+  l: external_exports.int().nonnegative()
 }).strict();
-var PersonDetailChangedBySchema = external_exports.object({
-  memberId: external_exports.uuid(),
-  name: external_exports.string().min(1)
+var ProjectOutcomeRowSchema = external_exports.object({
+  projectId: external_exports.uuid().nullable(),
+  name: external_exports.string().min(1).nullable(),
+  /** Null without an active Git Connection; otherwise the merged count. */
+  mergedPrCount: external_exports.int().nonnegative().nullable(),
+  mergedPrShare: external_exports.number().min(0).max(1).nullable(),
+  sizeBands: ProjectOutcomeSizeBandsSchema.nullable(),
+  usagePerPrIndex: external_exports.number().nonnegative().nullable(),
+  promptsPerPr: external_exports.number().nonnegative().nullable(),
+  permissionRequestsPerPr: external_exports.number().nonnegative().nullable(),
+  permissionWaitMs: external_exports.int().nonnegative(),
+  replyWaitMs: external_exports.int().nonnegative(),
+  medianReviewWaitMs: external_exports.int().nonnegative().nullable(),
+  medianLeadTimeMs: external_exports.int().nonnegative().nullable(),
+  retouchRate: external_exports.number().min(0).max(1).nullable(),
+  changesRequestedRate: external_exports.number().min(0).max(1).nullable(),
+  toolFailureRate: external_exports.number().min(0).max(1).nullable(),
+  activeMsPerPrompt: external_exports.int().nonnegative().nullable()
 }).strict();
-var PersonDetailStateSchema = external_exports.object({
-  enabled: external_exports.boolean(),
-  changedAt: external_exports.iso.datetime().nullable(),
-  changedBy: PersonDetailChangedBySchema.nullable(),
-  viewers: external_exports.array(PersonDetailViewerSchema)
+var ProjectOutcomeReportSchema = external_exports.object({
+  from: KpiDateSchema,
+  to: KpiDateSchema,
+  tz: external_exports.string().min(1),
+  /** False means the Activity columns are complete and the Git ones are null. */
+  gitConnected: external_exports.boolean(),
+  /** False when this installation has no GitHub App, so nobody can connect. */
+  gitAvailable: external_exports.boolean(),
+  rows: external_exports.array(ProjectOutcomeRowSchema)
 }).strict();
-var UpdatePersonDetailRequestSchema = external_exports.object({
-  enabled: external_exports.boolean()
-}).strict();
-var PersonDetailErrorResponseSchema = external_exports.object({
-  code: OrganizationErrorCodeSchema
+var ProjectOutcomeErrorResponseSchema = external_exports.object({
+  code: KpiErrorCodeSchema
 }).strict();
 
 // packages/shared/src/repository-claims.ts
@@ -26677,7 +26746,7 @@ var cliMessages = {
 };
 
 // apps/relay/src/relay.ts
-import { readFile as readFile10, stat as stat6 } from "node:fs/promises";
+import { readFile as readFile10, stat as stat7 } from "node:fs/promises";
 
 // apps/relay/src/agents.ts
 import { readFile as readFile6 } from "node:fs/promises";
@@ -26691,7 +26760,9 @@ var PersistedAgentSchema = external_exports.object({
   lastModel: external_exports.string().optional(),
   ended: external_exports.boolean(),
   lastEventAt: external_exports.number().int().nonnegative(),
-  currentState: AgentStateSchema.optional()
+  currentState: AgentStateSchema.optional(),
+  // Files written before AO-169 already carry a decided start.
+  transcriptStartResolved: external_exports.boolean().default(true)
 }).strict();
 var AgentsFileSchema = external_exports.object({
   version: external_exports.literal(PERSIST_VERSION),
@@ -26729,6 +26800,7 @@ var AgentStore = class _AgentStore {
       subagents: /* @__PURE__ */ new Set(),
       repositoryResolved: false,
       offset: 0,
+      transcriptStartResolved: false,
       seenMessageIds: /* @__PURE__ */ new Set(),
       lastEventAt: now,
       ended: false
@@ -26772,7 +26844,8 @@ var AgentStore = class _AgentStore {
       ...state.lastModel !== void 0 ? { lastModel: state.lastModel } : {},
       ended: state.ended,
       lastEventAt: state.lastEventAt,
-      ...state.currentState !== void 0 ? { currentState: state.currentState } : {}
+      ...state.currentState !== void 0 ? { currentState: state.currentState } : {},
+      transcriptStartResolved: state.transcriptStartResolved
     };
   }
   async load() {
@@ -26802,6 +26875,7 @@ var AgentStore = class _AgentStore {
             subagents: /* @__PURE__ */ new Set(),
             repositoryResolved: false,
             offset: persisted.offset,
+            transcriptStartResolved: persisted.transcriptStartResolved,
             seenMessageIds: capSeenMessageIds(persisted.seenMessageIds),
             ...persisted.lastModel !== void 0 ? { lastModel: persisted.lastModel } : {},
             lastEventAt: persisted.lastEventAt,
@@ -27066,13 +27140,21 @@ async function resolveRepositoryContext(cwd, exec = defaultExecFile) {
 }
 
 // apps/relay/src/transcript.ts
-import { open as open5 } from "node:fs/promises";
+import { open as open5, stat as stat5 } from "node:fs/promises";
 var READ_CHUNK_BYTES = 64 * 1024;
 function asRecord(value) {
   return value !== null && typeof value === "object" ? value : void 0;
 }
 function count(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : void 0;
+}
+async function transcriptSize(transcriptPath) {
+  try {
+    const stats = await stat5(transcriptPath);
+    return stats.size;
+  } catch (error62) {
+    return error62.code === "ENOENT" ? 0 : null;
+  }
 }
 function readLine(line, state, accumulator) {
   let parsed;
@@ -27168,8 +27250,26 @@ async function readTranscriptUsage(transcriptPath, state) {
 }
 
 // apps/relay/src/hooks.ts
-async function enrichStop(activity, input2, state) {
+function readString2(input2, key) {
+  const value = input2[key];
+  return typeof value === "string" ? value : void 0;
+}
+async function resolveTranscriptStart(input2, state) {
+  if (input2.hook_event_name === "SessionStart" && readString2(input2, "source") === "startup") {
+    return { resolved: true, offsetSet: false };
+  }
   if (input2.transcript_path === void 0) {
+    return { resolved: false, offsetSet: false };
+  }
+  const size = await transcriptSize(input2.transcript_path);
+  if (size === null) {
+    return { resolved: false, offsetSet: false };
+  }
+  state.offset = size;
+  return { resolved: true, offsetSet: size > 0 };
+}
+async function enrichStop(activity, input2, state) {
+  if (input2.transcript_path === void 0 || !state.transcriptStartResolved) {
     return activity;
   }
   const usage = await readTranscriptUsage(input2.transcript_path, state);
@@ -27231,13 +27331,19 @@ var HookProcessor = class {
     }
     const input2 = result.data;
     const state = this.agents.get(input2.session_id, this.clock.now());
-    const offsetBefore = state.offset;
-    const seenBefore = state.seenMessageIds.size;
     if (state.ended) {
       state.lastEventAt = this.clock.now();
       this.logger.info("hook.dropped", { reason: "ended", kind: input2.hook_event_name });
       return "dropped";
     }
+    let offsetSet = false;
+    if (!state.transcriptStartResolved) {
+      const start = await resolveTranscriptStart(input2, state);
+      offsetSet = start.offsetSet;
+      state.transcriptStartResolved = start.resolved;
+    }
+    const offsetBefore = state.offset;
+    const seenBefore = state.seenMessageIds.size;
     if (!state.repositoryResolved) {
       try {
         state.repositoryContext = await this.resolveRepository(input2.cwd);
@@ -27298,7 +27404,7 @@ var HookProcessor = class {
       this.logger.error("hook.error", code === void 0 ? {} : { code });
       return "error";
     }
-    await this.persistIfNeeded(input2, state, offsetBefore, seenBefore);
+    await this.persistIfNeeded(input2, state, offsetBefore, seenBefore, offsetSet);
     if (outcome === "queued") {
       this.logger.info("hook.queued", { count: 1 });
     }
@@ -27306,12 +27412,13 @@ var HookProcessor = class {
   }
   /**
    * Writes `agents.json` after a Stop that consumed transcript bytes (or new
-   * message ids) and after SessionEnd. The monotonic floor is not part of this
+   * message ids), after SessionEnd, and once when the first hook of an Agent
+   * sets a non-zero transcript start. The monotonic floor is not part of this
    * file; `clock.json` is written separately for every processed Activity.
    */
-  async persistIfNeeded(input2, state, offsetBefore, seenBefore) {
+  async persistIfNeeded(input2, state, offsetBefore, seenBefore, offsetSet) {
     const stopChanged = input2.hook_event_name === "Stop" && (state.offset !== offsetBefore || state.seenMessageIds.size !== seenBefore);
-    if (input2.hook_event_name !== "SessionEnd" && !stopChanged) {
+    if (input2.hook_event_name !== "SessionEnd" && !stopChanged && !offsetSet) {
       return;
     }
     try {
@@ -27496,7 +27603,7 @@ var import_websocket = __toESM(require_websocket(), 1);
 var import_websocket_server = __toESM(require_websocket_server(), 1);
 
 // apps/relay/src/quarantine.ts
-import { readFile as readFile8, stat as stat5 } from "node:fs/promises";
+import { readFile as readFile8, stat as stat6 } from "node:fs/promises";
 import { dirname as dirname6 } from "node:path";
 var DEFAULT_QUARANTINE_MAX_BYTES = 5 * 1024 * 1024;
 var QuarantineWriter = class {
@@ -27535,7 +27642,7 @@ var QuarantineWriter = class {
     return true;
   }
   async enforceLimit() {
-    const info = await stat5(this.path);
+    const info = await stat6(this.path);
     if (info.size <= this.maxBytes) {
       return;
     }
@@ -28839,7 +28946,7 @@ function alreadyRunningHandle(socketPath) {
 }
 async function fileStamp(path) {
   try {
-    const info = await stat6(path);
+    const info = await stat7(path);
     return { mtimeMs: info.mtimeMs, size: info.size };
   } catch {
     return { mtimeMs: void 0, size: void 0 };
@@ -29201,7 +29308,7 @@ async function startRelay(options) {
 }
 
 // apps/relay/src/version.ts
-var VERSION = true ? "0.1.0" : readDevelopmentVersion();
+var VERSION = true ? "0.1.1" : readDevelopmentVersion();
 
 // apps/relay/src/cli.ts
 var DEFAULT_SERVER = true ? "https://office-dev.byteflow.tr" : "http://localhost:3000";
